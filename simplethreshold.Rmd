@@ -1,0 +1,210 @@
+---
+title: "simplethreshold"
+author: "WinnieChoy"
+date: "06/11/2019"
+output: html_document
+---
+```{r}
+data<-read.csv("second_half.csv")
+```
+
+```{r}
+#par(mfrow=c(2,2))
+time<-seq_len(length(data$Amplitude))/10000
+#plot(time,data$Amplitude,type="l",main="Actual ", ylab="Amplitude", xlab="Time per seconds")
+#eventtime2<-c(2.7,6.7,10.2,14.9,19.3,24,29.2,35.5,42.5,48.9,56.3)
+#eventtype2<-c("L","L","R","R","L","R","R","L","R","L","R")
+eventtime2<-c(2.7,6.7,10.2,14.9,19.3,24,29.2,35.5,42.5,48.9,56.3)
+eventtype2<-c("L","L","R","L","R","L","R","L","R","L","R")
+eventtable2<-data.frame(eventtime2,eventtype2)
+#time_first2<-seq_len(length(first2$Amplitude))/10000
+#plot(time_first2,first2$Amplitude,type="l")
+
+for (i in 1:nrow(eventtable2)) {
+    t_idx <- (time < (eventtable2[i, 1] + 0.5)) & (time > (eventtable2[i, 1] -  0.5))
+    line_col <- ifelse(eventtable2[i, 2] == "R", "red", "blue")
+    lines(time [t_idx], data$Amplitude[t_idx], type = "l", col = line_col)
+}
+```
+
+```{r}
+df2<-data.frame(Y=data$Amplitude,time=time )
+class <- rep("none", nrow(df2))
+class_time <- rep(NA, nrow(df2))
+event_id <- rep(NA, nrow(df2))
+
+for (i in 1:nrow(eventtable2)) {
+    t_idx <- (time < (eventtable2[i, 1] + 0.45)) & (time > (eventtable2[i, 1] -  0.45))
+    line_col <- ifelse(eventtable2[i, 2] == "R", "right", "left")
+   # line_col <- ifelse(eventtable[i, 2] == "R", "red","blue")
+   #lines(time_fhalf2[t_idx], fhalf2$Amplitude[t_idx], type = "l", col = line_col)
+    class[t_idx] <- line_col
+    class_time[t_idx] <- seq_len(sum(t_idx))
+    event_id[t_idx] <- i
+}
+
+time_none <-df2$time[which(class == "none")]
+diff_time_none <- diff(time_none)
+idx_event <- which(diff_time_none > 0.45)
+time_none_point <- time_none[idx_event] - 1
+
+for (i in 1:length(time_none_point)) {
+    t_idx <- (time< (time_none_point[i] + 0.5)) & (time > (time_none_point[i] - 
+        0.5))
+    line_col <- "none_selected"
+    class[t_idx] <- line_col
+    class_time[t_idx] <- seq_len(sum(t_idx))
+    event_id[t_idx] <- i + 12
+}
+df2$class <- factor(class, levels = c("right", "left", "none_selected", 
+    "none"))
+df2$class_time <- class_time
+df2$event_id <- event_id
+
+```
+```{r}
+df2$class <- factor(class, levels = c("right", "left", "none_selected", 
+    "none"))
+df2$class_time <- class_time
+df2$event_id <- event_id
+#library(ggplot2)
+#ggplot(df2, aes(x = time, y = Y, col = class, group = 1)) + geom_line() + scale_color_manual(values = c("#E41A1C", 
+#    "#377EB8", "grey", "black")) + theme_bw()
+```
+
+#Tsfeature
+```{r}
+library(tsfeatures)
+Y <- df2$Y
+Y_lists<- list()
+
+
+for (i in 1:nrow(eventtable2)) {
+    t_idx <- (time< (eventtable2[i, 1] + 0.5)) & (time > (eventtable2[i,1] - 0.5))
+    Y_lists[[i]] <- Y[t_idx]
+    
+}
+for (i in 1:length(time_none_point)) {
+    t_idx <- (time < (time_none_point[i] + 0.5)) & (time > (time_none_point[i] - 
+        0.5))
+    Y_lists <- append(Y_lists, list(Y[t_idx]))
+}
+
+```
+```{r}
+Y_featuress <- cbind(tsfeatures(Y_lists, c("acf_features", "entropy", "lumpiness", 
+    "flat_spots", "crossing_points")), tsfeatures(Y_lists, "max_kl_shift", width = 48), 
+    tsfeatures(Y_lists, c("mean", "var"), scale = FALSE, na.rm = TRUE), tsfeatures(Y_lists, 
+        c("max_level_shift", "max_var_shift"), trim = TRUE))
+
+Y_featuress$class <- c(as.character(eventtable2$eventtype), rep("none", length(time_none_point)))
+```
+
+#determine the left, right based on if the positive/negative maximum happened first, and "none" if the maxima do not pass a certain threshold
+```{r}
+library(tuneR)
+library(ggplot2)
+library(tidyverse)
+time <- seq_len(length(data$Amplitude))/10000
+Y <- data$Amplitude
+
+
+# Function to predict the event on a window
+# checking if both the magnitude of the positive maximum and negative maximum is 
+# greater than 1000
+# if so, check if it is going positive first or negative first 
+# to determine Right or Left
+predict_lr <- function(x, high_threshold = 20) {
+  if(max(x) > high_threshold | min(x) < -high_threshold) {
+    t_high <-   which.max(x)
+    t_low <- which.min(x)
+    
+    if (t_high < t_low) {
+      res <- "R"
+    } else {
+      res <- "L"
+    }
+  } else {
+    res <- "none"
+  }
+  return(res)
+}
+
+
+
+# The length of window we used for input of predict function each time
+window_length <- 10000
+
+# The threshold indicates the happen of an event
+high_threshold <- 20
+
+
+# Initialisation
+
+read_in <- c() # A vector that will save the data read in
+predict_res <- c() # A vector that saves the predicted event results
+predict_time_res <- c() # A vector that saves the time of predicted event results
+
+last_event_time <- 0 # A numeric indicates the time of last event was saved
+last_event <- "none" # A character indicates the class of last event
+
+
+for (i in 1:length(Y)) {
+  
+  # read the data in
+  read_in <- append(read_in, Y[i])
+  
+  # only keep the last "window_length" elements as a window to use for predict
+  read_in <- read_in[(length(read_in) - min(window_length, length(read_in)) + 1):length(read_in)]
+  
+  
+  # if we have more than "window_length" data
+  if(i > window_length) {
+    
+    # We only want to predict every 1000 time point moves
+    if(i %% 1000 == 0) {
+      print(i)
+      
+      # We only want to predict when the maximum of this window 
+      # greater than this "high_threshold"
+      if(max(abs(read_in)) > high_threshold) {
+        
+        # We only want to predict if there is 1.5s passed the last event is classifed
+        # as left or right, or want to predict if the last event is classified as none.
+        # that is, here, we assume there wont be two "left/right" happened within 1.5s
+        if (time[i] - last_event_time > 2 | last_event == "none") {
+          predict_res <- append(predict_res, predict_lr(read_in))
+          predict_time_res <- append(predict_time_res, time[i])
+          
+          # update the last_event_time, last_event_time
+          last_event_time <- time[i]
+          last_event <- tail(predict_res, n = 1)
+        }
+        
+        # Priting the last event
+        print(last_event)
+      } 
+    }
+  }
+  
+}
+
+# results:
+
+predict_res
+
+predict_time_res
+
+```
+
+```{r}
+eventtime<-c(2.7,6.7,10.2,14.9,19.3,24,29.2,35.5,42.5,48.9,56.3)
+#eventtype<-c("L","L","R","R","L","R","R","L","R","L","R")
+eventtype<-c("L","L","R","L","R","L","R","L","R","L","R")
+not_none <- predict_res != "none"
+predict_res <- predict_res[not_none]
+predict_time_res <- predict_time_res[not_none]
+
+sum(predict_res != eventtype)
+table(predict_res, eventtype)
+```
